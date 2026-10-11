@@ -115,12 +115,12 @@ func TestUnknownSequencesStayInLeftover(t *testing.T) {
 func TestColorDepthStopsAtDA(t *testing.T) {
 	var out bytes.Buffer
 	s := &scripted{}
-	s.set(iTermXTV, syncTermDA, "never read")
+	s.set(iTermXTV, xtermDA, "never read")
 	r := ColorDepth(&out, s, 2*time.Second)
 	if out.String() != Queries {
 		t.Fatalf("wrote %q", out.String())
 	}
-	if r.Depth != DepthTrue || r.CTerm != "1.3" {
+	if r.Depth != DepthTrue {
 		t.Fatalf("got %s", r)
 	}
 	if s.calls != 2 {
@@ -210,6 +210,8 @@ const (
 	ctdaPixels     = "\x1b[<1;2;3;4;5;6;7c"
 	ctdaNoPixels   = "\x1b[<1;2;3;5c"
 	xtermSixelDA   = "\x1b[?64;1;2;4;6;9;15;16;17;18;21;22;28c"
+	fTelnetDA      = "\x1b[=67;84;101;114;109;1;189c"
+	fTelnetCTDA    = "\x1b[<0;4;7;8c"
 	cellReply      = "\x1b[6;20;10t"
 	areaReplies    = "\x1b[4;480;800t\x1b[8;24;80t"
 )
@@ -226,7 +228,8 @@ func TestSixelDecision(t *testing.T) {
 		{"xterm with sixel, cell reply", xtermSixelDA + cellReply, true, 10, 20},
 		{"xterm with sixel, area replies only", xtermSixelDA + areaReplies, true, 10, 20},
 		{"xterm with sixel, no size", xtermSixelDA, true, 0, 0},
-		{"SyncTERM 1.3 predates CTDA", syncTermDA, false, 0, 0},
+		{"SyncTERM 1.3 without CTDA", syncTermDA, false, 0, 0},
+		{"fTelnet_enhanced: CTerm 1.189 answers CTDA with pixels", fTelnetDA + fTelnetCTDA, true, 0, 0},
 		{"SyncTERM 1.316 with pixel ops", syncTerm1316DA + ctdaPixels, true, 0, 0},
 		{"SyncTERM 1.316 text mode", syncTerm1316DA + ctdaNoPixels, false, 0, 0},
 		{"SyncTERM 1.316 no CTDA", syncTerm1316DA, false, 0, 0},
@@ -261,8 +264,27 @@ func TestSecondBurstForCTerm(t *testing.T) {
 	}
 }
 
+// An older CTerm revision is still asked CTDA: fTelnet_enhanced reports
+// 1.189 and answers it with pixel operations.
+func TestSecondBurstForOldCTermRevision(t *testing.T) {
+	var out bytes.Buffer
+	s := &scripted{}
+	s.set(fTelnetDA, fTelnetCTDA+fTelnetDA)
+	r := ColorDepth(&out, s, time.Second)
+	want := Queries + ctdaQuery + cellQueries + "\x1b[c"
+	if out.String() != want {
+		t.Fatalf("wrote %q, want %q", out.String(), want)
+	}
+	if !r.Sixel || r.CTerm != "1.189" {
+		t.Fatalf("got %s / %s", r, r.SixelReason)
+	}
+	if string(r.Raw) != fTelnetDA+fTelnetCTDA+fTelnetDA {
+		t.Fatalf("raw = %q", r.Raw)
+	}
+}
+
 func TestNoSecondBurstForPlainTerminals(t *testing.T) {
-	for _, reply := range []string{"", xtermDA, syncTermDA} {
+	for _, reply := range []string{"", xtermDA} {
 		var out bytes.Buffer
 		s := &scripted{}
 		s.set(reply)
