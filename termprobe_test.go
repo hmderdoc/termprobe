@@ -204,3 +204,71 @@ func TestChanReader(t *testing.T) {
 		t.Fatal("closed channel should read as EOF")
 	}
 }
+
+const (
+	syncTerm1316DA = "\x1b[=67;84;101;114;109;1;316;0c"
+	ctdaPixels     = "\x1b[<1;2;3;4;5;6;7c"
+	ctdaNoPixels   = "\x1b[<1;2;3;5c"
+	xtermSixelDA   = "\x1b[?64;1;2;4;6;9;15;16;17;18;21;22;28c"
+	cellReply      = "\x1b[6;20;10t"
+	areaReplies    = "\x1b[4;480;800t\x1b[8;24;80t"
+)
+
+func TestSixelDecision(t *testing.T) {
+	cases := []struct {
+		name         string
+		in           string
+		sixel        bool
+		cellW, cellH int
+	}{
+		{"silent", "", false, 0, 0},
+		{"xterm without sixel", xtermDA, false, 0, 0},
+		{"xterm with sixel, cell reply", xtermSixelDA + cellReply, true, 10, 20},
+		{"xterm with sixel, area replies only", xtermSixelDA + areaReplies, true, 10, 20},
+		{"xterm with sixel, no size", xtermSixelDA, true, 0, 0},
+		{"SyncTERM 1.3 predates CTDA", syncTermDA, false, 0, 0},
+		{"SyncTERM 1.316 with pixel ops", syncTerm1316DA + ctdaPixels, true, 0, 0},
+		{"SyncTERM 1.316 text mode", syncTerm1316DA + ctdaNoPixels, false, 0, 0},
+		{"SyncTERM 1.316 no CTDA", syncTerm1316DA, false, 0, 0},
+		{"conformance level 4 alone is not sixel", "\x1b[?4c", false, 0, 0},
+		{"insane cell size ignored", xtermSixelDA + "\x1b[6;2000;1t", true, 0, 0},
+	}
+	for _, c := range cases {
+		r := Decide([]byte(c.in), time.Second)
+		if r.Sixel != c.sixel || r.CellW != c.cellW || r.CellH != c.cellH {
+			t.Errorf("%s: sixel=%v cell=%dx%d (%s), want %v %dx%d", c.name, r.Sixel, r.CellW, r.CellH, r.SixelReason, c.sixel, c.cellW, c.cellH)
+		}
+		if len(r.Leftover) != 0 {
+			t.Errorf("%s: leftover %q", c.name, r.Leftover)
+		}
+	}
+}
+
+func TestSecondBurstForCTerm(t *testing.T) {
+	var out bytes.Buffer
+	s := &scripted{}
+	s.set(syncTerm1316DA, ctdaPixels+"\x1b[6;16;8t", syncTerm1316DA, "typed")
+	r := ColorDepth(&out, s, time.Second)
+	want := Queries + ctdaQuery + cellQueries + "\x1b[c"
+	if out.String() != want {
+		t.Fatalf("wrote %q, want %q", out.String(), want)
+	}
+	if !r.Sixel || r.CellW != 8 || r.CellH != 16 || r.Depth != DepthTrue {
+		t.Fatalf("got %s / %s", r, r.SixelReason)
+	}
+	if len(s.chunks) != 1 {
+		t.Fatalf("read past the second DA reply")
+	}
+}
+
+func TestNoSecondBurstForPlainTerminals(t *testing.T) {
+	for _, reply := range []string{"", xtermDA, syncTermDA} {
+		var out bytes.Buffer
+		s := &scripted{}
+		s.set(reply)
+		ColorDepth(&out, s, 80*time.Millisecond)
+		if out.String() != Queries {
+			t.Errorf("reply %q: wrote %q, want only the first burst", reply, out.String())
+		}
+	}
+}
